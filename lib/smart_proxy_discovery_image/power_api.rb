@@ -24,25 +24,49 @@ module Proxy::DiscoveryImage
       rescue JSON::ParserError
         log_halt 500, "Unable to parse kexec JSON input: #{body_data}"
       end
-      run_after_response data, 2, kexec, "--debug", "--force", "--append=#{data['append']}", "--initrd=/tmp/initrd.img", "/tmp/vmlinuz", *data['extra']
+      download_and_run_after_response data, 2, kexec, "--debug", "--force", "--append=#{data['append']}", "--initrd=/tmp/initrd.img", "/tmp/vmlinuz", *data['extra']
       { :result => true }.to_json
     end
 
 
     # Execute command in a separate thread after 5 seconds to give the server some
     # time to finish the request. Does *not* execute via a shell.
-    def run_after_response(data, seconds, *command)
+    def run_after_response(seconds, *command)
+      Thread.start do
+        begin
+          logger.debug "Power API scheduling in #{seconds} seconds: #{command.inspect}"
+          sleep seconds
+          logger.debug "Power API executing: #{command.inspect}"
+          if (sudo = which('sudo'))
+            status = system(sudo, *command)
+          else
+            logger.warn "sudo binary was not found"
+          end
+          # only report errors
+          logger.warn "The attempted command failed with code #{$?.exitstatus}" unless status
+        rescue Exception => e
+          logger.error "Error during command execution: #{e}"
+        end
+      end
+    end
+
+    # Variant which also downloads kernel and initramdisk
+    def download_and_run_after_response(data, seconds, *command)
       Thread.start do
         begin
           # download kernel and initramdisk
-          logger.debug "Downloading: #{data['kernel']}"
-          vmlinuz_thread = ::Proxy::HttpDownload.new(data['kernel'], '/tmp/vmlinuz').start
-          logger.error("vmlinuz is still downloading, ignored") unless vmlinuz_thread
-          logger.error("cannot download vmlinuz for kexec") unless vmlinuz_thread.join == 0
-          logger.debug "Downloading: #{data['initram']}"
-          initrd_thread = ::Proxy::HttpDownload.new(data['initram'], '/tmp/initrd.img').start
-          logger.error("initrd.img is still downloading, ignored") unless initrd_thread
-          logger.error("cannot download initrd.img for kexec") unless initrd_thread.join == 0
+          if data && data['kernel']
+            logger.debug "Downloading: #{data['kernel']}"
+            vmlinuz_thread = ::Proxy::HttpDownload.new(data['kernel'], '/tmp/vmlinuz').start
+            logger.error("vmlinuz is still downloading, ignored") unless vmlinuz_thread
+            logger.error("cannot download vmlinuz for kexec") unless vmlinuz_thread.join == 0
+          end
+          if data && data['initram']
+            logger.debug "Downloading: #{data['initram']}"
+            initrd_thread = ::Proxy::HttpDownload.new(data['initram'], '/tmp/initrd.img').start
+            logger.error("initrd.img is still downloading, ignored") unless initrd_thread
+            logger.error("cannot download initrd.img for kexec") unless initrd_thread.join == 0
+          end
           # wait few seconds just in case the download was fast and perform kexec
           # only perform kexec when both locks were available to prevent subsequent request while downloading
           if vmlinuz_thread && initrd_thread
