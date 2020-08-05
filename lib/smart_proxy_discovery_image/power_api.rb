@@ -55,36 +55,26 @@ module Proxy::DiscoveryImage
       Thread.start do
         begin
           # download kernel and initramdisk
-          if data && data['kernel']
-            logger.debug "Downloading: #{data['kernel']}"
-            vmlinuz_thread = ::Proxy::HttpDownload.new(data['kernel'], '/tmp/vmlinuz').start
-            logger.error("vmlinuz is still downloading, ignored") unless vmlinuz_thread
-            logger.error("cannot download vmlinuz for kexec") unless vmlinuz_thread.join == 0
-          end
-          if data && data['initram']
-            logger.debug "Downloading: #{data['initram']}"
-            initrd_thread = ::Proxy::HttpDownload.new(data['initram'], '/tmp/initrd.img').start
-            logger.error("initrd.img is still downloading, ignored") unless initrd_thread
-            logger.error("cannot download initrd.img for kexec") unless initrd_thread.join == 0
-          end
+          downloaded = download_file(data, 'kernel', 'vmlinuz', '/tmp') &&
+                         download_file(data, 'initram', 'initrd.img', '/tmp')
           # wait few seconds just in case the download was fast and perform kexec
           # only perform kexec when both locks were available to prevent subsequent request while downloading
-          if vmlinuz_thread && initrd_thread
-            logger.debug "Power API scheduling in #{seconds} seconds: #{command.inspect}"
-            sleep seconds
-            logger.debug "Power API executing: #{command.inspect}"
-            if (sudo = which('sudo'))
-              status = system(sudo, *command)
-            else
-              logger.warn "sudo binary was not found"
-            end
-          end
-          # only report errors
-          logger.warn "The attempted command failed with code #{$?.exitstatus}" unless status
+          run_after_response(seconds, *command) if downloaded
         rescue Exception => e
           logger.error "Error during command execution: #{e}"
         end
       end
+    end
+
+    def download_file(data, kind, name, prefix)
+      return unless data && (url = data[kind])
+
+      logger.debug "Downloading: #{url}"
+      download_thread = ::Proxy::HttpDownload.new(url, File.join(prefix, name)).start
+      logger.error("#{name} is still downloading, ignored") unless download_thread
+      download_success = download_thread.join.zero?
+      logger.error("cannot download #{name} for kexec") unless download_success
+      download_success
     end
   end
 end
